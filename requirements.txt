@@ -1,0 +1,17 @@
+# Runtime
+langgraph==1.2.23
+langchain-openai==1.8.4  # used with base_url=https://openrouter.ai/api/v1 (OpenRouter only)
+langsmith==0.15.0
+beautifulsoup4==4.15.0
+rank-bm25==0.2.2
+rich==15.0.0
+prompt_toolkit==3.0.53
+pydantic==2.14.4
+PyYAML==6.0.3
+python-dotenv==1.2.4
+httpx==0.28.1
+
+# Dev / build
+pytest==9.2.0
+ruff==0.17.6
+pyinstaller==6.22.3

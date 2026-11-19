@@ -1,0 +1,12 @@
+.env
+venv/
+.venv/
+dist/
+build/
+__pycache__/
+*.pyc
+*.log
+*.report.md
+*.spec
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,47 @@
+{
+  "name": "LP Auditor Agent",
+  "version": "1.0.0",
+  "description": "A CLI agent that audits landing-page HTML files for SEO, accessibility, performance, i18n and link-safety issues, explains each issue and writes a fix report after user approval.",
+  "creator_name": "Chana Einstein",
+  "contact_information": "chana821@gmail.com",
+  "release_date": "2026-11-27",
+  "repository_url": "https://github.com/<github-username>/lp-auditor",
+  "download_url": "https://github.com/<github-username>/lp-auditor/releases/download/v1.0.0/agent.exe",
+  "target_audience": "Frontend developers, marketing web teams, landing-page owners",
+  "professional_fields": [
+    "Web Development",
+    "SEO",
+    "Web Accessibility",
+    "Digital Marketing"
+  ],
+  "tasks_capable_of_performing": [
+    "Landing page SEO audit",
+    "Accessibility (WCAG) audit of landing pages",
+    "Basic web performance checks",
+    "RTL and multi-language checks",
+    "Prompt-injection detection in page content",
+    "Fix report generation"
+  ],
+  "examples_of_suitable_questions": [
+    "audit C:\\pages\\black-friday.html",
+    "Check this landing page for accessibility problems: C:\\pages\\join.html",
+    "Is my landing page ready for launch from an SEO point of view? C:\\pages\\demo.html"
+  ],
+  "technical_specifications": {
+    "framework": "LangGraph",
+    "llm_provider": "OpenRouter",
+    "supported_models": [
+      "<filled on day 8 from agent/models.yaml>"
+    ],
+    "features_enabled": {
+      "rag": true,
+      "web_search": false,
+      "code_execution": false,
+      "mcp_support": false
+    },
+    "required_permissions": [
+      "local_file_read",
+      "local_file_write"
+    ]
+  }
+}
