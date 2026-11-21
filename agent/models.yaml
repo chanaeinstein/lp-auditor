@@ -11,10 +11,10 @@ base_url: https://openrouter.ai/api/v1
 profiles:
   free:
     guard:
-      - id: google/gemma-4-31b-it:free
-        theoretical_price_from: google/gemma-4-31b-it
       - id: nvidia/nemotron-3.5-lightning:free
         theoretical_price_from: nvidia/nemotron-3.5-lightning
+      - id: google/gemma-4-31b-it:free
+        theoretical_price_from: google/gemma-4-31b-it
       - id: google/gemma-4-26b-a4b-it:free
         theoretical_price_from: google/gemma-4-26b-a4b-it
     writer:

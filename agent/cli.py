@@ -178,6 +178,9 @@ def build_app(console: Console) -> App:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     console = Console()
     _out(
         console,
@@ -189,8 +192,18 @@ def main() -> int:
     except SystemExit as exc:
         return int(exc.code or 1)
 
-    run_repl(app, make_line_reader())
+    try:
+        run_repl(app, make_line_reader())
+    finally:
+        flush_tracing()
     return 0
+
+
+def flush_tracing() -> None:
+    """Send pending LangSmith traces before exit, so no thread dies at shutdown."""
+    from langchain_core.tracers.langchain import wait_for_all_tracers
+
+    wait_for_all_tracers()
 
 
 def make_line_reader() -> Callable[[], str]:
