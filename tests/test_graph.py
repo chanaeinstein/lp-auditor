@@ -42,16 +42,23 @@ FIXTURES = Path(__file__).resolve().parent.parent / "evals" / "fixtures"
 IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
 
 
-def test_in_scope_message_loads_page_and_runs_checks(make_llm) -> None:
+WRITER_REPLY = "## Summary\nThe page has no title.\n\n## Issues\n### [high] SEO-01 - Missing page title"
+AUDIT_NODES = [
+    "input_guard",
+    "load_page",
+    "run_checks",
+    "retrieve_rules",
+    "write_report",
+]
+
+
+def test_in_scope_message_runs_the_full_audit_path(make_llm) -> None:
     message = f"audit {FIXTURES / 'page_seo.html'}"
-    updates, lines, chat, tracker = _run(make_llm, [IN_SCOPE], message)
-    assert [node for node, _ in updates] == ["input_guard", "load_page", "run_checks"]
-    assert lines == [
-        "[INFO] Entering Node: input_guard",
-        "[INFO] Entering Node: load_page",
-        "[INFO] Entering Node: run_checks",
-    ]
-    findings = updates[-1][1]["findings"]
+    updates, lines, chat, tracker = _run(make_llm, [IN_SCOPE, WRITER_REPLY], message)
+    assert [node for node, _ in updates] == AUDIT_NODES
+    assert lines == [f"[INFO] Entering Node: {n}" for n in AUDIT_NODES]
+    by_node = dict(updates)
+    findings = by_node["run_checks"]["findings"]
     assert {f["rule_id"] for f in findings} == {
         "SEO-01",
         "SEO-03",
@@ -60,9 +67,24 @@ def test_in_scope_message_loads_page_and_runs_checks(make_llm) -> None:
         "SEO-07",
         "SEO-09",
     }
-    assert "Score: 18/24" in updates[-1][1]["reply"]
-    assert [r.node for r in tracker.records] == ["input_guard"]
+    rules = by_node["retrieve_rules"]["rules"]
+    assert [r.split()[1] for r in rules] == [
+        "SEO-01",
+        "SEO-03",
+        "SEO-05",
+        "SEO-06",
+        "SEO-07",
+        "SEO-09",
+    ]
+    report = by_node["write_report"]["report"]
+    assert report.startswith("# Landing Page Audit: page_seo.html\nScore: 18/24")
+    assert "### [high] SEO-01" in report
+    assert by_node["write_report"]["reply"] == report
+    assert [r.node for r in tracker.records] == ["input_guard", "write_report"]
     assert chat.calls[0][1].content == message
+    writer_prompt = chat.calls[1][1].content
+    assert "### SEO-01 Missing page title" in writer_prompt
+    assert "### A11Y-01" not in writer_prompt
 
 
 def test_load_error_ends_the_graph(make_llm) -> None:

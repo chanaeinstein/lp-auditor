@@ -1,7 +1,7 @@
 """LangGraph workflow.
 
-Day 3: START -> input_guard -> (refuse | load_page -> run_checks) -> END.
-Days 4-5 add the rest of the audit path from docs/SPEC.md section 4.
+Day 4: START -> input_guard -> (refuse | load_page -> run_checks -> retrieve_rules
+-> write_report) -> END. Day 5 adds the rest of the audit path from docs/SPEC.md section 4.
 """
 
 from __future__ import annotations
@@ -19,7 +19,9 @@ from agent.nodes import (
     make_input_guard,
     make_load_page,
     make_refuse,
+    make_retrieve_rules,
     make_run_checks,
+    make_write_report,
     route_after_guard,
     route_after_load,
 )
@@ -28,12 +30,19 @@ RUN_NAME = "lp-audit"
 DEFAULT_LANGSMITH_PROJECT = "lp-auditor"
 
 
-def build_graph(guard_llm: ChatLLM, printer: Printer = print) -> Any:
+def build_graph(
+    guard_llm: ChatLLM,
+    printer: Printer = print,
+    writer_llm: ChatLLM | None = None,
+) -> Any:
+    """Compile the graph. `writer_llm` defaults to the guard model (handy in tests)."""
     graph = StateGraph(AuditState)
     graph.add_node("input_guard", make_input_guard(guard_llm, printer))
     graph.add_node("refuse", make_refuse(printer))
     graph.add_node("load_page", make_load_page(printer))
     graph.add_node("run_checks", make_run_checks(printer))
+    graph.add_node("retrieve_rules", make_retrieve_rules(printer))
+    graph.add_node("write_report", make_write_report(writer_llm or guard_llm, printer))
     graph.add_edge(START, "input_guard")
     graph.add_conditional_edges(
         "input_guard", route_after_guard, {"refuse": "refuse", "load_page": "load_page"}
@@ -42,7 +51,9 @@ def build_graph(guard_llm: ChatLLM, printer: Printer = print) -> Any:
         "load_page", route_after_load, {"end": END, "run_checks": "run_checks"}
     )
     graph.add_edge("refuse", END)
-    graph.add_edge("run_checks", END)
+    graph.add_edge("run_checks", "retrieve_rules")
+    graph.add_edge("retrieve_rules", "write_report")
+    graph.add_edge("write_report", END)
     return graph.compile()
 
 

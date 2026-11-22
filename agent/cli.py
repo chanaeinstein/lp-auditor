@@ -95,12 +95,21 @@ class App:
     """The REPL logic, independent of the input source so it can be tested."""
 
     def __init__(
-        self, console: Console, llm: OpenRouterLLM, tracker: CostTracker
+        self,
+        console: Console,
+        llm: OpenRouterLLM,
+        tracker: CostTracker,
+        writer_llm: OpenRouterLLM | None = None,
     ) -> None:
         self.console = console
         self.llm = llm
+        self.writer_llm = writer_llm or llm
         self.tracker = tracker
-        self.graph = build_graph(llm, printer=lambda text: _out(console, text))
+        self.graph = build_graph(
+            llm,
+            printer=lambda text: _out(console, text),
+            writer_llm=self.writer_llm,
+        )
 
     def handle(self, line: str) -> bool:
         """Handle one input line. Returns False when the session should end."""
@@ -177,10 +186,15 @@ def build_app(console: Console) -> App:
         raise SystemExit(1)
 
     tracker = CostTracker(max_cost_usd=max_cost)
-    guard = choices["guard"]
+    guard, writer = choices["guard"], choices["writer"]
     llm = OpenRouterLLM(api_key, guard, tracker)
-    _out(console, f"[INFO] Profile: {profile} | guard model: {guard.model_id}")
-    return App(console, llm, tracker)
+    writer_llm = OpenRouterLLM(api_key, writer, tracker)
+    _out(
+        console,
+        f"[INFO] Profile: {profile} | guard model: {guard.model_id} "
+        f"| writer model: {writer.model_id}",
+    )
+    return App(console, llm, tracker, writer_llm)
 
 
 def main() -> int:

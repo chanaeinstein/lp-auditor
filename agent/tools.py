@@ -1,4 +1,4 @@
-"""Tools: load_page, run_checks, rule-base access. BM25 retrieval and cost helpers arrive on day 4.
+"""Tools: load_page, run_checks, rule-base access and BM25 rule retrieval.
 
 Every check here is plain Python and follows the Detection line of its rule in
 agent/knowledge/rules.md exactly. Keep the two in sync.
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+from rank_bm25 import BM25Okapi
 
 from agent.models import resource_path
 
@@ -80,6 +81,7 @@ class PageError(Exception):
 
 
 QUOTED_PATH = re.compile(r"[\"']([^\"']+)[\"']")
+AUDIT_HTML_PATH = re.compile(r"(.+?\.html?)(?=\s|$)", re.IGNORECASE)
 HTML_PATH = re.compile(r"[^\s\"'<>|]+\.html?\b", re.IGNORECASE)
 ANY_FILE_PATH = re.compile(r"[^\s\"'<>|]*[\\/:.][^\s\"'<>|]*\.[A-Za-z0-9]{1,5}\b")
 
@@ -91,7 +93,10 @@ def extract_path(message: str) -> str | None:
     if quoted:
         return quoted.group(1).strip()
     if text.lower().startswith("audit "):
-        return text[len("audit ") :].strip() or None
+        rest = text[len("audit ") :].strip()
+        # Paths may contain spaces, so cut only after the first .html/.htm.
+        html_end = AUDIT_HTML_PATH.match(rest)
+        return html_end.group(1) if html_end else rest or None
     for pattern in (HTML_PATH, ANY_FILE_PATH):
         match = pattern.search(text)
         if match:
@@ -636,3 +641,66 @@ def score(findings: list[Finding]) -> tuple[int, int]:
     checked = {r.rule_id for r in load_rules().values() if r.has_detection}
     failed = {f["rule_id"] for f in findings} & checked
     return len(checked) - len(failed), len(checked)
+
+
+# --------------------------------------------------------------------------- retrieval
+
+FREE_TEXT_TOP_K = 3
+WORD = re.compile(r"\w+")
+
+
+def tokenize(text: str) -> list[str]:
+    """Lower-case word tokens (Unicode aware, so Hebrew words are kept)."""
+    return [w.lower() for w in WORD.findall(text)]
+
+
+@dataclass(frozen=True)
+class RuleIndex:
+    ids: list[str]
+    texts: list[str]
+    bm25: BM25Okapi
+
+    def search(self, query: str, k: int = FREE_TEXT_TOP_K) -> list[str]:
+        """Ids of the top-k chunks for the query. Chunks with no matching term are skipped."""
+        terms = tokenize(query)
+        if not terms:
+            return []
+        scores = self.bm25.get_scores(terms)
+        ranked = sorted(range(len(self.ids)), key=lambda i: scores[i], reverse=True)
+        return [self.ids[i] for i in ranked[:k] if scores[i] > 0]
+
+
+def build_index(rules: dict[str, Rule]) -> RuleIndex:
+    ids = list(rules)
+    texts = [rules[i].text for i in ids]
+    # epsilon=0: words found in most chunks ("why", "fix") get no weight, so they
+    # cannot make an unrelated rule look relevant.
+    return RuleIndex(ids, texts, BM25Okapi([tokenize(t) for t in texts], epsilon=0))
+
+
+@lru_cache(maxsize=1)
+def rule_index() -> RuleIndex:
+    return build_index(load_rules())
+
+
+def free_text(message: str) -> str:
+    """The user's words without the page path, used as the BM25 query."""
+    path = extract_path(message)
+    text = message.replace(path, " ") if path else message
+    return norm(text)
+
+
+def retrieve_rules(
+    findings: list[Finding], message: str = "", index: RuleIndex | None = None
+) -> list[str]:
+    """Rule chunks for the report: every found rule by id, then top-3 BM25 for free text."""
+    index = index or rule_index()
+    by_id = dict(zip(index.ids, index.texts, strict=True))
+    wanted: list[str] = []
+    for f in findings:
+        if f["rule_id"] in by_id and f["rule_id"] not in wanted:
+            wanted.append(f["rule_id"])
+    for rule_id in index.search(free_text(message)):
+        if rule_id not in wanted:
+            wanted.append(rule_id)
+    return [by_id[i] for i in wanted]

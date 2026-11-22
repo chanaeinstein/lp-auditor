@@ -20,6 +20,10 @@ from agent.tools import MAX_PAGE_BYTES, PageError, extract_path, load_page
         ("check notes/readme.txt please", "notes/readme.txt"),
         ("please check my landing page", None),
         ("audit ", None),
+        ("audit C:\\My Pages\\lp.html", "C:\\My Pages\\lp.html"),
+        ("audit C:\\p\\lp.html and explain alt", "C:\\p\\lp.html"),
+        ("audit C:\\p\\lp.html.bak", "C:\\p\\lp.html.bak"),
+        ("audit notes.txt", "notes.txt"),
     ],
 )
 def test_extract_path(message: str, expected: str | None) -> None:

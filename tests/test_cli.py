@@ -55,17 +55,30 @@ IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
 OUT_OF_SCOPE = '{"in_scope": false, "injection": false, "reason": "weather"}'
 
 
-def test_message_runs_graph_and_prints_cost_line(make_llm) -> None:
-    chat = FakeChat(content=IN_SCOPE)
-    app, buffer = _app(make_llm, chat)
+def test_message_runs_graph_and_prints_report_and_cost_line(make_llm) -> None:
+    console, buffer = _console()
+    guard, tracker = make_llm(FakeChat(content=IN_SCOPE))
+    writer_chat = FakeChat(
+        content="## Summary\nNo title.\n\n## Issues\n### [high] SEO-01"
+    )
+    writer, _ = make_llm(writer_chat, tracker)
+    app = cli.App(console, guard, tracker, writer)
     assert app.handle(f"audit {SEO_PAGE}") is True
     out = buffer.getvalue()
-    assert "[INFO] Entering Node: input_guard" in out
-    assert "[INFO] Entering Node: load_page" in out
-    assert "[INFO] Entering Node: run_checks" in out
-    assert "Score: 18/24 | Issues: 6" in out
+    for node in (
+        "input_guard",
+        "load_page",
+        "run_checks",
+        "retrieve_rules",
+        "write_report",
+    ):
+        assert f"[INFO] Entering Node: {node}" in out
+    assert "# Landing Page Audit: page_seo.html" in out
+    assert "Score: 18/24 | Issues: 6 (high 1, medium 3, low 2)" in out
+    assert "### [high] SEO-01" in out
     assert "[COST] total $0.000000" in out
-    assert "| calls 1" in out
+    assert "| calls 2" in out
+    assert len(writer_chat.calls) == 1
 
 
 def test_missing_file_prints_one_error_line(make_llm) -> None:
@@ -155,7 +168,10 @@ def test_build_app_selects_guard_model(monkeypatch) -> None:
 
     app = cli.build_app(console)
 
-    assert app.llm.choice.model_id == config["profiles"]["free"]["guard"][0]["id"]
+    free = config["profiles"]["free"]
+    assert app.llm.choice.model_id == free["guard"][0]["id"]
+    assert app.writer_llm.choice.model_id == free["writer"][0]["id"]
+    assert app.writer_llm.tracker is app.tracker
     assert isinstance(app.tracker, CostTracker)
     assert "[INFO] LangSmith tracing is off" in buffer.getvalue()
 
