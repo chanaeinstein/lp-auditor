@@ -47,29 +47,48 @@ def test_empty_line_is_ignored(make_llm) -> None:
     assert chat.calls == []
 
 
-def test_question_prints_answer_and_cost_line(make_llm) -> None:
-    chat = FakeChat(content="Add alt text to images.")
+IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
+OUT_OF_SCOPE = '{"in_scope": false, "injection": false, "reason": "weather"}'
+
+
+def test_message_runs_graph_and_prints_cost_line(make_llm) -> None:
+    chat = FakeChat(content=IN_SCOPE)
     app, buffer = _app(make_llm, chat)
-    assert app.handle("What should I check first?") is True
+    assert app.handle("audit page.html") is True
     out = buffer.getvalue()
-    assert "Add alt text to images." in out
+    assert "[INFO] Entering Node: input_guard" in out
+    assert "[INFO] Entering Node: echo" in out
+    assert "Audit request accepted: audit page.html" in out
     assert "[COST] total $0.000000" in out
     assert "| calls 1" in out
-    system, human = chat.calls[0]
-    assert human.content == "What should I check first?"
-    assert "landing-page" in system.content
+
+
+def test_out_of_scope_message_is_refused(make_llm) -> None:
+    app, buffer = _app(make_llm, FakeChat(content=OUT_OF_SCOPE))
+    app.handle("What's the weather?")
+    out = buffer.getvalue()
+    assert "[INFO] Entering Node: refuse" in out
+    assert "I can only audit landing-page HTML files" in out
 
 
 def test_model_error_prints_one_error_line(make_llm) -> None:
     app, buffer = _app(make_llm, FakeChat(error=RuntimeError("boom")))
     assert app.handle("hello") is True
     out = buffer.getvalue()
-    assert out.startswith("[ERROR] ")
+    assert "[ERROR] " in out
     assert "Traceback" not in out
 
 
+def test_invalid_guard_json_prints_one_error_line(make_llm) -> None:
+    app, buffer = _app(make_llm, FakeChat(content="not json"))
+    app.handle("audit page.html")
+    out = buffer.getvalue()
+    assert "[ERROR] The input_guard model returned invalid JSON twice" in out
+    assert "| calls 2" in out
+
+
 def test_cost_line_is_per_task(make_llm) -> None:
-    app, buffer = _app(make_llm, FakeChat())
+    app, buffer = _app(make_llm, FakeChat(content=IN_SCOPE))
     app.handle("one")
     app.handle("two")
     assert buffer.getvalue().count("| calls 1") == 2
@@ -139,3 +158,9 @@ def test_build_app_exits_cleanly_when_no_model(monkeypatch) -> None:
     with pytest.raises(SystemExit):
         cli.build_app(console)
     assert buffer.getvalue().startswith("[ERROR] Cannot read the OpenRouter model list")
+
+
+def test_byte_order_mark_is_ignored(make_llm) -> None:
+    app, buffer = _app(make_llm, FakeChat())
+    assert app.handle("﻿help") is True
+    assert "/quit" in buffer.getvalue()

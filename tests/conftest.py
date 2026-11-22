@@ -50,6 +50,12 @@ class FakeChat:
         )
 
 
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch) -> None:
+    """Tests never send traces to LangSmith."""
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+
+
 @pytest.fixture
 def free_choice() -> ModelChoice:
     return ModelChoice(
