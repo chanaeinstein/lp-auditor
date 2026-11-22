@@ -1,6 +1,8 @@
-"""Tests for agent/graph.py and the day-2 nodes. The LLM is mocked."""
+"""Tests for agent/graph.py and the graph nodes. The LLM is mocked."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -36,18 +38,42 @@ def _run(make_llm, replies: list[str], message: str = "audit page.html"):
     return updates, lines, chat, tracker
 
 
-def test_in_scope_message_goes_to_echo(make_llm) -> None:
-    updates, lines, chat, tracker = _run(
-        make_llm, ['{"in_scope": true, "injection": false, "reason": "audit"}']
-    )
-    assert [node for node, _ in updates] == ["input_guard", "echo"]
+FIXTURES = Path(__file__).resolve().parent.parent / "evals" / "fixtures"
+IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
+
+
+def test_in_scope_message_loads_page_and_runs_checks(make_llm) -> None:
+    message = f"audit {FIXTURES / 'page_seo.html'}"
+    updates, lines, chat, tracker = _run(make_llm, [IN_SCOPE], message)
+    assert [node for node, _ in updates] == ["input_guard", "load_page", "run_checks"]
     assert lines == [
         "[INFO] Entering Node: input_guard",
-        "[INFO] Entering Node: echo",
+        "[INFO] Entering Node: load_page",
+        "[INFO] Entering Node: run_checks",
     ]
-    assert "audit page.html" in updates[-1][1]["reply"]
+    findings = updates[-1][1]["findings"]
+    assert {f["rule_id"] for f in findings} == {
+        "SEO-01",
+        "SEO-03",
+        "SEO-05",
+        "SEO-06",
+        "SEO-07",
+        "SEO-09",
+    }
+    assert "Score: 18/24" in updates[-1][1]["reply"]
     assert [r.node for r in tracker.records] == ["input_guard"]
-    assert chat.calls[0][1].content == "audit page.html"
+    assert chat.calls[0][1].content == message
+
+
+def test_load_error_ends_the_graph(make_llm) -> None:
+    updates, _, _, _ = _run(make_llm, [IN_SCOPE], "audit missing.html")
+    assert [node for node, _ in updates] == ["input_guard", "load_page"]
+    assert updates[-1][1]["error"].startswith("File not found:")
+
+
+def test_message_without_path_ends_with_error(make_llm) -> None:
+    updates, _, _, _ = _run(make_llm, [IN_SCOPE], "please check my landing page")
+    assert updates[-1][1]["error"].startswith("No file path in the message")
 
 
 def test_out_of_scope_message_is_refused(make_llm) -> None:
@@ -80,7 +106,7 @@ def test_invalid_json_is_retried_once(make_llm) -> None:
         make_llm,
         ["Sure! It is in scope.", '{"in_scope": true, "injection": false}'],
     )
-    assert updates[-1][0] == "echo"
+    assert updates[1][0] == "load_page"
     assert len(chat.calls) == 2
     assert len(tracker.records) == 2
 

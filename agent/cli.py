@@ -41,7 +41,7 @@ Commands:
   audit <path>   Audit a landing-page HTML file (or any message with a path)
 
 Example:
-  audit C:\\pages\\black-friday.html   (full reports arrive in a later version)
+  audit C:\\pages\\black-friday.html
 """
 
 
@@ -121,15 +121,19 @@ class App:
         """Run one task through the graph, streaming node updates."""
         self.tracker.start_task()
         reply = ""
+        error = ""
         try:
             for _node, update in stream_task(self.graph, message):
                 reply = update.get("reply", reply)
+                error = update.get("error", error)
         except StructuredOutputError as exc:
             error_line(self.console, str(exc))
         except Exception as exc:  # noqa: BLE001 - every failure becomes one clear line
             error_line(self.console, describe_error(exc))
         else:
-            if reply:
+            if error:
+                error_line(self.console, error)
+            elif reply:
                 _out(self.console, reply.strip())
         _out(self.console, cost_line(self.tracker.task_records()), style="cyan")
 

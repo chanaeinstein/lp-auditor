@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -47,6 +48,9 @@ def test_empty_line_is_ignored(make_llm) -> None:
     assert chat.calls == []
 
 
+SEO_PAGE = (
+    Path(__file__).resolve().parent.parent / "evals" / "fixtures" / "page_seo.html"
+)
 IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
 OUT_OF_SCOPE = '{"in_scope": false, "injection": false, "reason": "weather"}'
 
@@ -54,13 +58,23 @@ OUT_OF_SCOPE = '{"in_scope": false, "injection": false, "reason": "weather"}'
 def test_message_runs_graph_and_prints_cost_line(make_llm) -> None:
     chat = FakeChat(content=IN_SCOPE)
     app, buffer = _app(make_llm, chat)
-    assert app.handle("audit page.html") is True
+    assert app.handle(f"audit {SEO_PAGE}") is True
     out = buffer.getvalue()
     assert "[INFO] Entering Node: input_guard" in out
-    assert "[INFO] Entering Node: echo" in out
-    assert "Audit request accepted: audit page.html" in out
+    assert "[INFO] Entering Node: load_page" in out
+    assert "[INFO] Entering Node: run_checks" in out
+    assert "Score: 18/24 | Issues: 6" in out
     assert "[COST] total $0.000000" in out
     assert "| calls 1" in out
+
+
+def test_missing_file_prints_one_error_line(make_llm) -> None:
+    app, buffer = _app(make_llm, FakeChat(content=IN_SCOPE))
+    app.handle("audit no_such_page.html")
+    out = buffer.getvalue()
+    assert "[ERROR] File not found:" in out
+    assert "check the path and try again" in out
+    assert "run_checks" not in out
 
 
 def test_out_of_scope_message_is_refused(make_llm) -> None:

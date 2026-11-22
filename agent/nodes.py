@@ -1,6 +1,7 @@
 """Graph nodes: guards, report writer, evaluator, HITL.
 
-Day 2: `input_guard`, `refuse` and a temporary `echo` node (replaced by `load_page` on day 3).
+Day 3: `input_guard`, `refuse`, `load_page`, `run_checks`. Until `write_report` exists
+(day 4), `run_checks` ends the graph with a plain findings summary.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from typing import Any, Protocol, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ValidationError
+
+from agent.tools import PageError, extract_path, load_page, run_checks, score
 
 
 class AuditState(TypedDict, total=False):
@@ -129,7 +132,7 @@ def make_input_guard(
 
 def route_after_guard(state: AuditState) -> str:
     if state.get("in_scope") and not state.get("injection_in_message"):
-        return "echo"
+        return "load_page"
     return "refuse"
 
 
@@ -142,16 +145,48 @@ def make_refuse(printer: Printer = print) -> Callable[[AuditState], AuditState]:
     return refuse
 
 
-def make_echo(printer: Printer = print) -> Callable[[AuditState], AuditState]:
-    """Temporary day-2 node: confirms the request was accepted. Replaced by load_page."""
+NO_PATH_ERROR = "No file path in the message - try: audit C:\\pages\\landing.html"
+SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
-    def echo(state: AuditState) -> AuditState:
-        info("echo", printer)
+
+def make_load_page(printer: Printer = print) -> Callable[[AuditState], AuditState]:
+    def load_page_node(state: AuditState) -> AuditState:
+        info("load_page", printer)
+        raw = extract_path(state["user_message"])
+        if raw is None:
+            return {"error": NO_PATH_ERROR}
+        try:
+            path, html = load_page(raw)
+        except PageError as exc:
+            return {"error": str(exc)}
+        return {"page_path": str(path), "html": html}
+
+    return load_page_node
+
+
+def route_after_load(state: AuditState) -> str:
+    return "end" if state.get("error") else "run_checks"
+
+
+def summarize_findings(page_path: str, findings: list[dict[str, Any]]) -> str:
+    """Plain summary printed until write_report exists (day 4)."""
+    passed, total = score(findings)
+    lines = [
+        f"Checks for {page_path}",
+        f"Score: {passed}/{total} | Issues: {len(findings)}",
+    ]
+    for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 3)):
+        lines.append(f"- [{f['severity']}] {f['rule_id']}: {f['detail']}")
+    return "\n".join(lines)
+
+
+def make_run_checks(printer: Printer = print) -> Callable[[AuditState], AuditState]:
+    def run_checks_node(state: AuditState) -> AuditState:
+        info("run_checks", printer)
+        findings = run_checks(state["html"])
         return {
-            "reply": (
-                f"Audit request accepted: {state['user_message']}\n"
-                "(Page loading and checks arrive in the next version.)"
-            )
+            "findings": findings,
+            "reply": summarize_findings(state["page_path"], findings),
         }
 
-    return echo
+    return run_checks_node
