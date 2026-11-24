@@ -11,7 +11,14 @@ from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 
-from agent.graph import build_graph, configure_tracing, stream_task
+from agent.graph import (
+    INTERRUPT,
+    build_graph,
+    configure_tracing,
+    new_thread_id,
+    resume_task,
+    stream_task,
+)
 from agent.llm import (
     DEFAULT_MAX_COST_USD,
     CostTracker,
@@ -100,16 +107,39 @@ class App:
         llm: OpenRouterLLM,
         tracker: CostTracker,
         writer_llm: OpenRouterLLM | None = None,
+        evaluator_llm: OpenRouterLLM | None = None,
+        read_answer: Callable[[str], str] = input,
     ) -> None:
         self.console = console
         self.llm = llm
         self.writer_llm = writer_llm or llm
+        self.evaluator_llm = evaluator_llm or llm
         self.tracker = tracker
+        self.read_answer = read_answer
+        self._muted = False
         self.graph = build_graph(
             llm,
-            printer=lambda text: _out(console, text),
+            printer=self._print,
             writer_llm=self.writer_llm,
+            evaluator_llm=self.evaluator_llm,
         )
+
+    def _print(self, text: str) -> None:
+        if not self._muted:
+            _out(self.console, text)
+
+    def confirm(self, question: str) -> bool:
+        """Ask a [Y/N] question until the answer is Y or N. End of input means No."""
+        while True:
+            try:
+                answer = self.read_answer(f"{question} ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                return False
+            if answer in ("y", "yes"):
+                return True
+            if answer in ("n", "no"):
+                return False
+            _out(self.console, "Please answer Y or N.")
 
     def handle(self, line: str) -> bool:
         """Handle one input line. Returns False when the session should end."""
@@ -131,10 +161,25 @@ class App:
         self.tracker.start_task()
         reply = ""
         error = ""
+        thread_id = new_thread_id()
         try:
-            for _node, update in stream_task(self.graph, message):
-                reply = update.get("reply", reply)
-                error = update.get("error", error)
+            events = stream_task(self.graph, message, thread_id)
+            while True:
+                question = ""
+                for node, update in events:
+                    if node == INTERRUPT:
+                        question = update.get("question", "Continue? [Y/N]")
+                        continue
+                    self._muted = False
+                    reply = update.get("reply", reply)
+                    error = update.get("error", error)
+                if not question:
+                    break
+                approved = self.confirm(question)
+                # On resume LangGraph runs confirm_save again from its start;
+                # its lines were already shown, so they stay quiet until it finishes.
+                self._muted = True
+                events = resume_task(self.graph, approved, thread_id)
         except StructuredOutputError as exc:
             error_line(self.console, str(exc))
         except Exception as exc:  # noqa: BLE001 - every failure becomes one clear line
@@ -144,6 +189,8 @@ class App:
                 error_line(self.console, error)
             elif reply:
                 _out(self.console, reply.strip())
+        finally:
+            self._muted = False
         _out(self.console, cost_line(self.tracker.task_records()), style="cyan")
 
 
@@ -186,15 +233,16 @@ def build_app(console: Console) -> App:
         raise SystemExit(1)
 
     tracker = CostTracker(max_cost_usd=max_cost)
-    guard, writer = choices["guard"], choices["writer"]
+    guard, writer, evaluator = choices["guard"], choices["writer"], choices["evaluator"]
     llm = OpenRouterLLM(api_key, guard, tracker)
     writer_llm = OpenRouterLLM(api_key, writer, tracker)
+    evaluator_llm = OpenRouterLLM(api_key, evaluator, tracker)
     _out(
         console,
         f"[INFO] Profile: {profile} | guard model: {guard.model_id} "
-        f"| writer model: {writer.model_id}",
+        f"| writer model: {writer.model_id} | evaluator model: {evaluator.model_id}",
     )
-    return App(console, llm, tracker, writer_llm)
+    return App(console, llm, tracker, writer_llm, evaluator_llm)
 
 
 def main() -> int:
@@ -215,8 +263,9 @@ def main() -> int:
     except SystemExit as exc:
         return int(exc.code or 1)
 
+    read_line, app.read_answer = make_readers()
     try:
-        run_repl(app, make_line_reader())
+        run_repl(app, read_line)
     finally:
         flush_tracing()
     return 0
@@ -229,15 +278,16 @@ def flush_tracing() -> None:
     wait_for_all_tracers()
 
 
-def make_line_reader() -> Callable[[], str]:
-    """prompt_toolkit in a real terminal; plain input() when stdin is piped."""
+def make_readers() -> tuple[Callable[[], str], Callable[[str], str]]:
+    """(command reader, answer reader): prompt_toolkit in a terminal, input() when piped."""
     if not sys.stdin.isatty():
-        return lambda: input()
+        return (lambda: input()), input
 
     from prompt_toolkit import PromptSession
 
     session: PromptSession[str] = PromptSession()
-    return lambda: session.prompt(PROMPT)
+    answers: PromptSession[str] = PromptSession()
+    return (lambda: session.prompt(PROMPT)), answers.prompt
 
 
 if __name__ == "__main__":

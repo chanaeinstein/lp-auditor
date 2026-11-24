@@ -55,30 +55,94 @@ IN_SCOPE = '{"in_scope": true, "injection": false, "reason": "audit"}'
 OUT_OF_SCOPE = '{"in_scope": false, "injection": false, "reason": "weather"}'
 
 
-def test_message_runs_graph_and_prints_report_and_cost_line(make_llm) -> None:
+class ScriptedChat(FakeChat):
+    def __init__(self, replies: list[str]) -> None:
+        super().__init__()
+        self.replies = list(replies)
+
+    def invoke(self, messages):  # type: ignore[override]
+        self.content = self.replies.pop(0)
+        return super().invoke(messages)
+
+
+CLEAN_PAGE = '{"injection": false, "quote": ""}'
+WRITER = "## Summary\nSix.\n\n## Issues\n" + "\n".join(
+    f"### [high] {i} - t"
+    for i in ("SEO-01", "SEO-03", "SEO-05", "SEO-06", "SEO-07", "SEO-09")
+)
+
+
+def _audit_app(make_llm, answers: list[str]):
     console, buffer = _console()
-    guard, tracker = make_llm(FakeChat(content=IN_SCOPE))
-    writer_chat = FakeChat(
-        content="## Summary\nNo title.\n\n## Issues\n### [high] SEO-01"
-    )
+    guard, tracker = make_llm(ScriptedChat([IN_SCOPE, CLEAN_PAGE]))
+    writer_chat = FakeChat(content=WRITER)
     writer, _ = make_llm(writer_chat, tracker)
-    app = cli.App(console, guard, tracker, writer)
-    assert app.handle(f"audit {SEO_PAGE}") is True
+    evaluator, _ = make_llm(FakeChat(content='{"passed": true}'), tracker)
+    questions: list[str] = []
+
+    def read_answer(question: str) -> str:
+        questions.append(question)
+        return answers.pop(0)
+
+    app = cli.App(console, guard, tracker, writer, evaluator, read_answer=read_answer)
+    return app, buffer, questions, writer_chat
+
+
+def _page(tmp_path: Path) -> Path:
+    page = tmp_path / "page_seo.html"
+    page.write_bytes(SEO_PAGE.read_bytes())
+    return page
+
+
+def test_audit_stops_at_yn_then_saves(make_llm, tmp_path) -> None:
+    page = _page(tmp_path)
+    app, buffer, questions, writer_chat = _audit_app(make_llm, ["maybe", "Y"])
+    assert app.handle(f"audit {page}") is True
     out = buffer.getvalue()
     for node in (
         "input_guard",
         "load_page",
+        "content_guard",
         "run_checks",
         "retrieve_rules",
         "write_report",
+        "evaluator",
+        "confirm_save",
+        "save_report",
     ):
-        assert f"[INFO] Entering Node: {node}" in out
-    assert "# Landing Page Audit: page_seo.html" in out
+        assert out.count(f"[INFO] Entering Node: {node}") == 1
+    assert out.count("# Landing Page Audit: page_seo.html") == 1
     assert "Score: 18/24 | Issues: 6 (high 1, medium 3, low 2)" in out
-    assert "### [high] SEO-01" in out
-    assert "[COST] total $0.000000" in out
-    assert "| calls 2" in out
+    saved = tmp_path / "page_seo.report.md"
+    assert questions == [f"Save report to {saved}? [Y/N] "] * 2
+    assert "Please answer Y or N." in out
+    assert f"Report saved to {saved}" in out
+    assert saved.read_text(encoding="utf-8").startswith("# Landing Page Audit")
+    assert out.index("Report saved") < out.index("[COST] total $0.000000")
+    assert "| calls 4" in out
     assert len(writer_chat.calls) == 1
+
+
+def test_audit_answer_no_does_not_save(make_llm, tmp_path) -> None:
+    page = _page(tmp_path)
+    app, buffer, _, _ = _audit_app(make_llm, ["n"])
+    app.handle(f"audit {page}")
+    out = buffer.getvalue()
+    assert "Report not saved." in out
+    assert "save_report" not in out
+    assert not (tmp_path / "page_seo.report.md").exists()
+
+
+def test_end_of_input_at_question_means_no(make_llm, tmp_path) -> None:
+    page = _page(tmp_path)
+    app, buffer, _, _ = _audit_app(make_llm, [])  # pop from empty list -> IndexError
+
+    def eof(_: str) -> str:
+        raise EOFError
+
+    app.read_answer = eof
+    app.handle(f"audit {page}")
+    assert "Report not saved." in buffer.getvalue()
 
 
 def test_missing_file_prints_one_error_line(make_llm) -> None:
@@ -171,6 +235,7 @@ def test_build_app_selects_guard_model(monkeypatch) -> None:
     free = config["profiles"]["free"]
     assert app.llm.choice.model_id == free["guard"][0]["id"]
     assert app.writer_llm.choice.model_id == free["writer"][0]["id"]
+    assert app.evaluator_llm.choice.model_id == free["evaluator"][0]["id"]
     assert app.writer_llm.tracker is app.tracker
     assert isinstance(app.tracker, CostTracker)
     assert "[INFO] LangSmith tracing is off" in buffer.getvalue()

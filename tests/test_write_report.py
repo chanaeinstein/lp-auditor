@@ -80,7 +80,8 @@ def test_write_report_builds_full_report(make_llm) -> None:
         "# Landing Page Audit: page_seo.html\n"
         "Score: 18/24 | Issues: 6 (high 1, medium 3, low 2)\n\n## Summary"
     )
-    assert update["reply"] == report
+    assert "reply" not in update
+    assert "revision_count" not in update
     assert [r.node for r in tracker.records] == ["write_report"]
 
     system, user = chat.calls[0]
@@ -130,6 +131,7 @@ def test_eval_feedback_asks_for_exactly_those_fixes(make_llm) -> None:
     assert "Change exactly the points listed" in messages[3].content
     assert update["report"].count("# Landing Page Audit") == 1
     assert "### [medium] SEO-07" in update["report"]
+    assert update["revision_count"] == 1
 
 
 def test_no_revision_messages_without_feedback(make_llm) -> None:

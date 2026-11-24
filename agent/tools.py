@@ -643,6 +643,93 @@ def score(findings: list[Finding]) -> tuple[int, int]:
     return len(checked) - len(failed), len(checked)
 
 
+# --------------------------------------------------------------------------- content_guard input
+
+HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.IGNORECASE)
+NON_TEXT_TAGS = ("script", "style", "template")
+PAGE_TEXT_MAX = 6000
+HIDDEN_BLOCK_MAX = 500
+HIDDEN_BLOCKS_MAX = 20
+
+
+@dataclass(frozen=True)
+class TextBlock:
+    element: str
+    text: str
+
+
+def is_concealed(el: Tag) -> bool:
+    """Hidden from sighted users: hidden / aria-hidden, or display:none / visibility:hidden."""
+    return is_hidden(el) or bool(HIDDEN_STYLE.search(attr(el, "style") or ""))
+
+
+def hidden_blocks(html: str) -> list[TextBlock]:
+    """Text a visitor never sees: HTML comments and the outermost concealed elements."""
+    soup = parse_html(html).soup
+    blocks: list[TextBlock] = []
+    for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
+        text = norm(str(comment))
+        if text:
+            blocks.append(TextBlock(cut(f"<!-- {text} -->"), text[:HIDDEN_BLOCK_MAX]))
+    for el in soup.find_all(True):
+        if not isinstance(el, Tag) or el.name in NON_TEXT_TAGS or not is_concealed(el):
+            continue
+        if any(isinstance(p, Tag) and is_concealed(p) for p in el.parents):
+            continue
+        text = norm(el.get_text(" "))
+        if text:
+            blocks.append(TextBlock(snippet(el), text[:HIDDEN_BLOCK_MAX]))
+    return blocks[:HIDDEN_BLOCKS_MAX]
+
+
+def visible_text(html: str) -> str:
+    """The text a visitor sees (concealed elements, scripts and comments left out)."""
+    soup = parse_html(html).soup
+    parts: list[str] = []
+
+    def walk(el: Tag) -> None:
+        for child in el.children:
+            if isinstance(child, Tag):
+                if child.name not in NON_TEXT_TAGS and not is_concealed(child):
+                    walk(child)
+            elif isinstance(child, NavigableString) and not isinstance(child, Comment):
+                parts.append(str(child))
+
+    walk(soup)
+    return norm(" ".join(parts))[:PAGE_TEXT_MAX]
+
+
+def locate_text(html: str, quote: str) -> str | None:
+    """Snippet of the element (or comment) that holds the quoted text, if it is on the page."""
+    needle = norm(quote)[:60].lower()
+    if not needle:
+        return None
+    soup = parse_html(html).soup
+    for string in soup.find_all(string=True):
+        if needle not in norm(str(string)).lower():
+            continue
+        if isinstance(string, Comment):
+            return cut(f"<!-- {norm(str(string))} -->")
+        parent = string.parent
+        return snippet(parent) if isinstance(parent, Tag) else cut(str(string))
+    return None
+
+
+# --------------------------------------------------------------------------- save_report
+
+
+def report_path(page_path: str | Path) -> Path:
+    """`<page_name>.report.md` next to the audited file."""
+    page = Path(page_path)
+    return page.with_name(f"{page.stem}.report.md")
+
+
+def save_report(page_path: str | Path, report: str) -> Path:
+    path = report_path(page_path)
+    path.write_text(report, encoding="utf-8")
+    return path
+
+
 # --------------------------------------------------------------------------- retrieval
 
 FREE_TEXT_TOP_K = 3
